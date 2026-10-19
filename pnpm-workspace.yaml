@@ -84,7 +84,8 @@ catalog:
   tailwindcss: ^4.3.3
   tree-kill: ^1.2.2
   tsx: ^4.23.11
-  typescript: ^7.0.2
+  # ESLint requires the TS 6 API; the root @typescript/native alias keeps tsc 7.
+  typescript: npm:@typescript/typescript6@^6.0.2
   uqr: ^0.1.2
   vite: 8.2.1
   vitest: ^4.1.10
