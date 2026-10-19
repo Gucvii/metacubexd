@@ -35,3 +35,6 @@ coverage
 
 # impeccable working dir (critique snapshots, render sidecar)
 .impeccable/
+
+# Private local runtime, reports, and migration material
+.local/

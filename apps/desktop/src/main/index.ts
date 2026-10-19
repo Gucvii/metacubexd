@@ -21,7 +21,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import {
@@ -71,6 +71,7 @@ import { createKernelManager } from './kernel-manager'
 import { createLogFileSink } from './log-file'
 import { createLoginItemController } from './login-item'
 import { createKernelCrashWatcher, createNotifier } from './notifier'
+import { localRuntimeOptions, protectSystemProxy } from './parallel-test'
 import { bootstrapDataDir } from './paths'
 import { buildProxyEnvCommand } from './proxy-env'
 import { makeToken } from './secrets'
@@ -99,6 +100,22 @@ import {
 // out/main/index.js location). All `join(__dirname, ...)` paths below resolve
 // exactly as the CJS equivalent did, in both dev and packaged (asar) layouts.
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
+
+// Opt-in fork runtime. Defaults preserve upstream's normal desktop behavior.
+const { parallelTestMode, localDataDir } = localRuntimeOptions({
+  dataDir: process.env.MCXD_DATA_DIR,
+  parallel: process.env.MCXD_PARALLEL_TEST,
+  appName: app.getName(),
+  appData: app.getPath('appData'),
+})
+if (localDataDir) {
+  if (!isAbsolute(localDataDir))
+    throw new Error('MCXD_DATA_DIR must be absolute')
+  process.umask(0o077)
+  mkdirSync(localDataDir, { recursive: true, mode: 0o700 })
+  app.setPath('userData', localDataDir)
+  app.setName('MetaCubeXD Local')
+}
 
 // Real fs adapter for bootstrapDataDir (recursive mkdir is idempotent).
 const fsAdapter: FsLike = {
@@ -286,10 +303,13 @@ async function boot(): Promise<void> {
   // Module-level so the quit path can disable() it (anti-lockout).
   const sysproxyConfigPath = join(userData, 'sysproxy.json')
   let defaultBypass = readSysProxyBypass(sysproxyConfigPath, fsAdapter)
-  const baseSystemProxy = createSystemProxyController({
-    host: '127.0.0.1',
-    port: mixedPort,
-  })
+  const baseSystemProxy = protectSystemProxy(
+    createSystemProxyController({
+      host: '127.0.0.1',
+      port: mixedPort,
+    }),
+    parallelTestMode,
+  )
   // enable() that always applies the default bypass list when the caller didn't
   // pass an explicit one — used by enable() below AND by the guard's re-assert.
   const enableWithBypass = (bypass?: string[]): Promise<void> =>
@@ -407,7 +427,7 @@ async function boot(): Promise<void> {
       return realTunController.uninstall()
     },
   }
-  tunController = tunControllerDelegate
+  tunController = parallelTestMode ? null : tunControllerDelegate
 
   agent = createAgent({
     binaryPath,
@@ -428,14 +448,14 @@ async function boot(): Promise<void> {
     mixedPort,
     // Inject the OS proxy controller; enables the capability-gated
     // /api/control/sysproxy routes + the 'system-proxy' feature flag.
-    systemProxy,
+    systemProxy: parallelTestMode ? undefined : systemProxy,
     // Inject the kernel version manager (delegate); enables the capability-gated
     // /api/control/kernel/* routes + the 'kernel-version' feature flag.
     kernelManager,
     // Inject the TUN controller (delegate); enables the capability-gated
     // /api/control/tun routes + the 'tun' feature flag. Backed by the real B-3
     // runtime controller built below once the supervisor/profiles exist.
-    tunController,
+    tunController: parallelTestMode ? undefined : tunControllerDelegate,
   })
 
   // Now that the supervisor exists, build the real manager. Downloaded kernels
@@ -577,7 +597,7 @@ async function boot(): Promise<void> {
         mode?: string
         stack?: string
       }
-      if (last.mode === 'tun') {
+      if (!parallelTestMode && last.mode === 'tun') {
         if (desktopSettings.tunAutoRestore) {
           tunRestoreStack =
             typeof last.stack === 'string' ? last.stack : 'mixed'
@@ -674,6 +694,22 @@ async function boot(): Promise<void> {
   process.env.MCXD_CLASH_SECRET = clashSecret
   // Loopback proxy port for Wave 2 system-proxy wiring.
   process.env.MCXD_MIXED_PORT = String(mixedPort)
+  if (localDataDir) {
+    writeFileSync(
+      join(localDataDir, 'local-session.json'),
+      JSON.stringify({
+        pid: process.pid,
+        parallelTestMode,
+        controlURL: `http://127.0.0.1:${controlPort}`,
+        clashURL: `http://127.0.0.1:${clashPort}`,
+        mixedPort,
+        controlToken,
+        clashSecret,
+        binaryPath,
+      }),
+      { mode: 0o600 },
+    )
+  }
 
   // Tray speed: stream the Clash /traffic endpoint and keep the last formatted
   // line for the tooltip; macOS additionally paints it into the menu-bar title
@@ -949,7 +985,8 @@ async function shutdownKernel(): Promise<void> {
   // teardown on quit is acceptable — the helper's on-disconnect teardown plus
   // the OS reaping the sidecar cover the residual.
   await Promise.race([
-    tunTeardown?.recoverNetwork() ?? Promise.resolve(),
+    (!parallelTestMode ? tunTeardown?.recoverNetwork() : undefined) ??
+      Promise.resolve(),
     new Promise<void>((resolve) => setTimeout(resolve, 3000)),
   ])
   // Stop re-asserting the OS proxy so the guard can't race the disable() below
@@ -1126,7 +1163,7 @@ if (process.platform === 'win32') {
 // registration must pin the executable + app path or the OS routes the link
 // to a bare electron binary with no app. Packaged macOS additionally requires
 // the schemes in Info.plist — declared via `protocols` in electron-builder.yml.
-for (const scheme of ['clash', 'clashmeta']) {
+for (const scheme of parallelTestMode ? [] : ['clash', 'clashmeta']) {
   if (process.defaultApp && process.argv[1]) {
     app.setAsDefaultProtocolClient(scheme, process.execPath, [
       resolve(process.argv[1]),
@@ -1237,7 +1274,7 @@ if (!app.requestSingleInstanceLock()) {
       // boot() builds the OS proxy controller (anti-lockout disable() on quit
       // lives in shutdownKernel). Passing it renders the tray "System Proxy"
       // checkbox; enable() applies the default bypass list (see boot()).
-      ...(systemProxy ? { systemProxy } : {}),
+      ...(!parallelTestMode && systemProxy ? { systemProxy } : {}),
       // TUN toggle. enable() elevates + relaunches the kernel — only ever on an
       // explicit tray click. Failures notify here (the tray re-syncs its
       // checkbox from status() afterwards).
@@ -1365,6 +1402,11 @@ if (!app.requestSingleInstanceLock()) {
     let hotkeyFailed: FailedHotkey[] = []
     const applyHotkeys = (bindings: typeof hotkeyBindings): void => {
       globalShortcut.unregisterAll()
+      if (parallelTestMode) {
+        hotkeyBindings = bindings
+        hotkeyFailed = []
+        return
+      }
       const result = registerHotkeys({
         globalShortcut,
         bindings,
