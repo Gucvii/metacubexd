@@ -34,6 +34,8 @@ export interface SystemProxyControllerOptions {
   platform?: NodeJS.Platform
   /** Injected runner; defaults to promisify(child_process.exec). */
   exec?: ExecFn
+  /** Local macOS builds must never clear a different client's proxy. */
+  onlyOwnDarwinProxy?: boolean
 }
 
 /**
@@ -54,6 +56,7 @@ export function createSystemProxyController(
 
   // Last applied bypass list, surfaced via describe().
   let lastBypass: string[] = []
+  let lastAutoProxyUrl: string | undefined
 
   const describe = () => ({ port, bypass: lastBypass })
 
@@ -90,6 +93,14 @@ export function createSystemProxyController(
   async function darwinDisable(): Promise<void> {
     const services = await darwinEnabledServices()
     for (const svc of services) {
+      if (opts.onlyOwnDarwinProxy) {
+        for (const kind of ['web', 'secureweb', 'socksfirewall']) {
+          if (await darwinOwnsProxy(svc, kind))
+            await exec(`networksetup -set${kind}proxystate "${svc}" off`)
+        }
+        await darwinDisableOwnAutoProxy(svc)
+        continue
+      }
       await exec(`networksetup -setwebproxystate "${svc}" off`)
       await exec(`networksetup -setsecurewebproxystate "${svc}" off`)
       await exec(`networksetup -setsocksfirewallproxystate "${svc}" off`)
@@ -100,6 +111,7 @@ export function createSystemProxyController(
   }
 
   async function darwinSetAutoProxy(url: string): Promise<void> {
+    lastAutoProxyUrl = url
     const services = await darwinEnabledServices()
     for (const svc of services) {
       await exec(`networksetup -setautoproxyurl "${svc}" ${url}`)
@@ -110,12 +122,58 @@ export function createSystemProxyController(
   async function darwinDisableAutoProxy(): Promise<void> {
     const services = await darwinEnabledServices()
     for (const svc of services) {
+      if (opts.onlyOwnDarwinProxy) {
+        await darwinDisableOwnAutoProxy(svc)
+        continue
+      }
       await exec(`networksetup -setautoproxystate "${svc}" off`)
     }
   }
 
+  function darwinFields(stdout: string): Record<string, string> {
+    return Object.fromEntries(
+      stdout.split('\n').flatMap((line) => {
+        const colon = line.indexOf(':')
+        return colon < 0
+          ? []
+          : [
+              [
+                line.slice(0, colon).trim().toLowerCase(),
+                line.slice(colon + 1).trim(),
+              ],
+            ]
+      }),
+    )
+  }
+
+  async function darwinOwnsProxy(svc: string, kind: string): Promise<boolean> {
+    const { stdout } = await exec(`networksetup -get${kind}proxy "${svc}"`)
+    const fields = darwinFields(stdout)
+    return (
+      fields.enabled?.toLowerCase() === 'yes' &&
+      fields.server === host &&
+      Number(fields.port) === port
+    )
+  }
+
+  async function darwinDisableOwnAutoProxy(svc: string): Promise<void> {
+    if (!lastAutoProxyUrl) return
+    const { stdout } = await exec(`networksetup -getautoproxyurl "${svc}"`)
+    const fields = darwinFields(stdout)
+    if (
+      fields.enabled?.toLowerCase() === 'yes' &&
+      fields.url === lastAutoProxyUrl
+    )
+      await exec(`networksetup -setautoproxystate "${svc}" off`)
+  }
+
   async function darwinIsEnabled(): Promise<boolean> {
     const services = await darwinEnabledServices()
+    if (opts.onlyOwnDarwinProxy) {
+      for (const svc of services)
+        if (await darwinOwnsProxy(svc, 'web')) return true
+      return false
+    }
     const first = services[0]
     if (!first) return false
     const { stdout } = await exec(`networksetup -getwebproxy "${first}"`)

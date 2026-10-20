@@ -592,6 +592,7 @@ const activeSection = ref<'core' | 'xd' | 'tools'>('core')
                       v-model="tunForm.tunEnable"
                       type="checkbox"
                       class="toggle toggle-primary"
+                      :aria-label="t('enableTunDevice')"
                       :disabled="
                         tunConfig.desktopMode.value &&
                         (tunConfig.busy.value ||

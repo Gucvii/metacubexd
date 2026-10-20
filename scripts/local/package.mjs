@@ -103,11 +103,11 @@ try {
       encoding: 'utf8',
     }).trim(),
     kernelVersion: kernel.version,
-    defaultMode: 'parallel-test',
+    defaultMode: 'manual',
   }
   json(join(data, 'app-install.json'), install)
   console.log(
-    `Installed ${destination}; Finder launches default to parallel test mode.`,
+    `Installed ${destination}; Open the app and enable system proxy/TUN manually in the GUI.`,
   )
 } catch (error) {
   console.error(error.message.split('\n')[0])

@@ -1,7 +1,11 @@
 import type { SystemProxyController } from '@metacubexd/agent/types'
 import { describe, expect, it, vi } from 'vitest'
 import { runShutdownCleanup } from '../cleanup'
-import { localRuntimeOptions, protectSystemProxy } from '../parallel-test'
+import {
+  localRuntimeOptions,
+  manualSystemProxy,
+  protectSystemProxy,
+} from '../parallel-test'
 
 describe('local desktop runtime defaults', () => {
   const base = { appName: 'MetaCubeXD', appData: '/user/appdata' }
@@ -11,27 +15,77 @@ describe('local desktop runtime defaults', () => {
       parallelTestMode: false,
     })
   })
-  it('opens the local packaged app in parallel mode even from Finder', () => {
+  it('opens the local packaged app with official controls from Finder', () => {
     expect(
       localRuntimeOptions({ ...base, appName: 'MetaCubeXD Local' }),
     ).toEqual({
       localDataDir: '/user/appdata/MetaCubeXD Local',
-      parallelTestMode: true,
+      parallelTestMode: false,
     })
   })
-  it('defaults an explicitly isolated data directory to parallel mode', () => {
+  it('exposes official controls for an isolated data directory', () => {
     expect(
       localRuntimeOptions({ ...base, dataDir: '/isolated' }).parallelTestMode,
-    ).toBe(true)
+    ).toBe(false)
   })
-  it('requires an explicit normal-mode request to expose OS controls', () => {
+  it('only hides OS controls for an explicit strict test request', () => {
     expect(
       localRuntimeOptions({
         ...base,
         appName: 'MetaCubeXD Local',
-        parallel: '0',
+        parallel: '1',
       }).parallelTestMode,
-    ).toBe(false)
+    ).toBe(true)
+  })
+})
+
+describe('manual system proxy ownership', () => {
+  it('does not resume or clear another client on startup and quit', async () => {
+    const original = controller()
+    const proxy = manualSystemProxy(original)
+    if (await proxy.isEnabled()) await proxy.enable()
+    await runShutdownCleanup({
+      systemProxy: proxy,
+      stopKernel: async () => {},
+      stopControlServer: async () => {},
+    })
+    await proxy.disableAutoProxy()
+    expect(original.isEnabled).not.toHaveBeenCalled()
+    expect(original.enable).not.toHaveBeenCalled()
+    expect(original.disable).not.toHaveBeenCalled()
+    expect(original.disableAutoProxy).not.toHaveBeenCalled()
+  })
+  it('supports GUI enable, live status, disable, and enable again', async () => {
+    const original = controller()
+    const proxy = manualSystemProxy(original)
+    await proxy.enable(['localhost'])
+    expect(original.enable).toHaveBeenCalledWith(['localhost'])
+    expect(await proxy.isEnabled()).toBe(true)
+    await proxy.disable()
+    expect(await proxy.isEnabled()).toBe(false)
+    await proxy.enable()
+    await proxy.disable()
+    expect(original.disable).toHaveBeenCalledTimes(2)
+  })
+  it('cleans up a partially failed enable on quit', async () => {
+    const original = controller()
+    vi.mocked(original.enable).mockRejectedValueOnce(
+      new Error('OS command failed'),
+    )
+    const proxy = manualSystemProxy(original)
+    await expect(proxy.enable()).rejects.toThrow('OS command failed')
+    await proxy.disable()
+    expect(original.disable).toHaveBeenCalledOnce()
+  })
+  it('releases a PAC enabled by this instance', async () => {
+    const original = controller()
+    const proxy = manualSystemProxy(original)
+    await proxy.setAutoProxy('http://127.0.0.1:21000/proxy.pac')
+    await proxy.disableAutoProxy()
+    await proxy.disable()
+    expect(original.setAutoProxy).toHaveBeenCalledOnce()
+    expect(original.disableAutoProxy).toHaveBeenCalledOnce()
+    expect(original.disable).toHaveBeenCalledOnce()
   })
 })
 

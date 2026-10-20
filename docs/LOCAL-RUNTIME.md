@@ -13,13 +13,15 @@
 - DNS 测试监听 `127.0.0.1:15353`，没有更改系统 DNS。
 - 查看实际端口：`node scripts/local/runtime.mjs status`。不会输出口令。
 
-从 Finder 打开本地应用，或双击仓库内 `Start Local.command`，默认都是**并行测试模式**。
-应用使用独立数据、缓存和二进制，禁止更改系统代理/PAC，隐藏系统代理与 TUN 控制，跳过全局快捷键和订阅 URL 协议注册。
-退出也不会清理其他客户端的系统代理。
-本地应用不设置开机自启。
+从 Finder 打开本地应用，或双击仓库内 `Start Local.command`，直接进入官方桌面界面。
+系统代理开关在「控制中心 → 系统」，TUN 开关在「配置 → TUN」；菜单栏也可操作。
+**默认不接管网络**，由用户在界面手动开启，不需要命令切换运行模式。
+启动不会把其他客户端的代理当成本应用恢复；退出只释放本应用本次手动启用且仍指向本应用端口的 macOS 代理。
+TUN 自动恢复默认关闭，后续可在官方桌面设置中主动开启。
+本地应用不设置开机自启，也不注册订阅 URL 协议处理器。
 
-`MCXD_DATA_DIR` 可指定独立数据目录；本地构建或指定独立目录时默认进入测试模式。
-只有显式设置 `MCXD_PARALLEL_TEST=0` 才恢复官方系统控制能力。
+`MCXD_DATA_DIR` 可指定独立数据目录。
+`MCXD_PARALLEL_TEST=1`（开发命令 `start --test`）仅用于内部严格测试，会禁用系统接管能力；日常使用不需要。
 没有这些本地选项的原版应用保留上游默认行为。
 
 ## 配置来源和边界
@@ -62,18 +64,16 @@ node scripts/local/runtime.mjs stop
 
 ## 用户手动切换
 
-本阶段没有切换系统代理或 TUN。准备好接管后，由用户操作：
+本次安装与验收没有切换系统代理或 TUN，Sparkle 继续运行。准备好接管后，由用户操作：
 
 1. 在 Sparkle 中关闭系统代理、PAC 和 TUN，并关闭其自动接管选项。
-2. 退出本地测试应用，或运行 `node scripts/local/runtime.mjs stop`。
-3. 运行 `node scripts/local/runtime.mjs start --normal`。
-4. 在本地应用中手动开启系统代理；需要 TUN 时，再手动开启并完成 macOS 权限提示。
+2. 打开 `~/Applications/MetaCubeXD Local.app`。
+3. 在「控制中心 → 系统」开启系统代理；需要接管不遵循系统代理的应用时，在「配置 → TUN」开启 TUN。
+4. 首次启用 TUN 按官方流程完成 macOS 权限提示，安装官方 helper。
 
-`start --normal` 会检查系统代理/PAC 和可访问的 Sparkle TUN 状态；仍在接管时拒绝启动，不替用户关闭 Sparkle。
-正常模式的 TUN 使用官方 helper；**此次没有安装或验证特权 TUN 接管**。
-从 Finder 重新启动仍默认测试模式，这一阶段不会持久化自动接管。
-
-需要回到 Sparkle 时，先在正常模式本地应用中关闭系统代理/TUN并退出，再由用户重新开启 Sparkle。
+不需要退出重启、切换模式或执行命令。系统代理和 TUN 按需选择，日常一般先用系统代理即可。
+**此次没有安装或实机验证特权 TUN 接管**；GUI 验收通过拦截写请求检验控件，不改系统网络。
+需要回到 Sparkle 时，先在本地应用中关闭系统代理/TUN，再由用户重新开启 Sparkle。
 
 ## 从源码复现
 
@@ -116,4 +116,4 @@ pnpm --filter @metacubexd/desktop test
 pnpm --filter @metacubexd/agent test
 ```
 
-还应实际验证：并行模式的启动/退出、主用节点、混合代理、规则集、WebSocket、配置版本，以及 Sparkle 和系统网络状态未被修改。
+还应实际验证：默认手动接管状态下的启动/退出、系统代理和 TUN 开关、主用节点、混合代理、规则集、WebSocket、配置版本，以及 Sparkle 和系统网络状态未被修改。

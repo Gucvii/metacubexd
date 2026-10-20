@@ -21,7 +21,7 @@ import {
 const s = session()
 const report = {
   timestamp: new Date().toISOString(),
-  mode: 'parallel-test',
+  mode: s.parallelTestMode ? 'parallel-test' : 'manual',
   checks: {},
   warnings: [],
 }
@@ -31,7 +31,6 @@ const check = (name, condition) => {
 }
 
 try {
-  check('parallelMode', s.parallelTestMode)
   const [info, state, config, profiles, providers] = await Promise.all([
     api(s, '/api/control/info'),
     api(s, '/api/control/kernel/status'),
@@ -50,10 +49,23 @@ try {
   )
   check('kernelRunning', state.status === 'running')
   check('tunOff', config.tun?.enable === false)
-  check(
-    'noSystemProxyOrTunControls',
-    !info.features.includes('system-proxy') && !info.features.includes('tun'),
-  )
+  if (s.parallelTestMode) {
+    check(
+      'strictTestControlsHidden',
+      !info.features.includes('system-proxy') && !info.features.includes('tun'),
+    )
+  } else {
+    check(
+      'officialNetworkControlsAvailable',
+      info.features.includes('system-proxy') && info.features.includes('tun'),
+    )
+    const [proxy, tun] = await Promise.all([
+      api(s, '/api/control/sysproxy'),
+      api(s, '/api/control/tun'),
+    ])
+    check('manualSystemProxyOff', proxy.enabled === false)
+    check('manualTunOff', tun.enabled === false && tun.mode === 'sidecar')
+  }
   check('loopbackController', state.externalController.startsWith('127.0.0.1:'))
   check(
     'loopbackProxy',
@@ -88,12 +100,6 @@ try {
     cors.headers.get('access-control-allow-origin') === s.controlURL ||
       cors.headers.get('access-control-allow-origin') === '*',
   )
-  for (const path of ['/api/control/sysproxy', '/api/control/tun/status']) {
-    const response = await fetch(`${s.controlURL}${path}`, {
-      headers: { Authorization: `Bearer ${s.controlToken}` },
-    })
-    check(`disabled:${path}`, response.status === 404)
-  }
 
   const snapshot = yaml.parse(
     readFileSync(join(home, 'profiles/sparkle-snapshot.yaml'), 'utf8'),

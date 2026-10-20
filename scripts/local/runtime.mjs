@@ -87,8 +87,13 @@ const trackedSparkleFiles = [
   'substore/sub-store.json',
 ]
 async function sparkleState() {
-  const proxies = (await unixJSON('/proxies')).proxies
+  const [proxyState, config] = await Promise.all([
+    unixJSON('/proxies'),
+    unixJSON('/configs'),
+  ])
+  const proxies = proxyState.proxies
   return {
+    tun_enabled: config.tun?.enable === true,
     hashes: Object.fromEntries(
       trackedSparkleFiles
         .filter((f) => existsSync(join(sparkle, f)))
@@ -297,7 +302,7 @@ async function api(s, path, { core = false, method = 'GET', body } = {}) {
   return response.status === 204 ? null : response.json()
 }
 
-async function start(normal = false) {
+async function start(normal = true) {
   assert(
     existsSync(join(root, 'apps/desktop/out/main/index.js')),
     'Build the desktop app first',
@@ -306,24 +311,6 @@ async function start(normal = false) {
     existsSync(join(root, 'apps/desktop/renderer/index.html')),
     'Build and copy the UI first',
   )
-  if (normal) {
-    const proxy = command('/usr/sbin/scutil', ['--proxy'])
-    assert(
-      !/(?:HTTPEnable|HTTPSEnable|SOCKSEnable|ProxyAutoConfigEnable)\s*:\s*1/.test(
-        proxy,
-      ),
-      'Turn off Sparkle’s system proxy/PAC manually before starting normal mode',
-    )
-    try {
-      const config = await unixJSON('/configs')
-      assert(
-        !config.tun?.enable,
-        'Turn off Sparkle’s TUN manually before starting normal mode',
-      )
-    } catch (error) {
-      if (error.code !== 'ENOENT' && error.code !== 'ECONNREFUSED') throw error
-    }
-  }
   try {
     const current = session()
     if (current.parallelTestMode === !normal) {
@@ -448,11 +435,11 @@ if (
 )
   try {
     if (action === 'prepare') await prepare()
-    else if (action === 'start') await start(process.argv.includes('--normal'))
+    else if (action === 'start') await start(!process.argv.includes('--test'))
     else if (action === 'status') await status()
     else if (action === 'stop') await stop()
     else
-      throw new Error('Usage: runtime.mjs prepare|start [--normal]|status|stop')
+      throw new Error('Usage: runtime.mjs prepare|start [--test]|status|stop')
   } catch (error) {
     // Never serialize errors/response bodies that could contain imported nodes.
     console.error(

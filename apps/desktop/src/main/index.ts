@@ -71,7 +71,11 @@ import { createKernelManager } from './kernel-manager'
 import { createLogFileSink } from './log-file'
 import { createLoginItemController } from './login-item'
 import { createKernelCrashWatcher, createNotifier } from './notifier'
-import { localRuntimeOptions, protectSystemProxy } from './parallel-test'
+import {
+  localRuntimeOptions,
+  manualSystemProxy,
+  protectSystemProxy,
+} from './parallel-test'
 import { bootstrapDataDir } from './paths'
 import { buildProxyEnvCommand } from './proxy-env'
 import { makeToken } from './secrets'
@@ -303,11 +307,13 @@ async function boot(): Promise<void> {
   // Module-level so the quit path can disable() it (anti-lockout).
   const sysproxyConfigPath = join(userData, 'sysproxy.json')
   let defaultBypass = readSysProxyBypass(sysproxyConfigPath, fsAdapter)
+  const nativeSystemProxy = createSystemProxyController({
+    host: '127.0.0.1',
+    port: mixedPort,
+    onlyOwnDarwinProxy: !!localDataDir,
+  })
   const baseSystemProxy = protectSystemProxy(
-    createSystemProxyController({
-      host: '127.0.0.1',
-      port: mixedPort,
-    }),
+    localDataDir ? manualSystemProxy(nativeSystemProxy) : nativeSystemProxy,
     parallelTestMode,
   )
   // enable() that always applies the default bypass list when the caller didn't
@@ -1163,7 +1169,9 @@ if (process.platform === 'win32') {
 // registration must pin the executable + app path or the OS routes the link
 // to a bare electron binary with no app. Packaged macOS additionally requires
 // the schemes in Info.plist — declared via `protocols` in electron-builder.yml.
-for (const scheme of parallelTestMode ? [] : ['clash', 'clashmeta']) {
+for (const scheme of parallelTestMode || localDataDir
+  ? []
+  : ['clash', 'clashmeta']) {
   if (process.defaultApp && process.argv[1]) {
     app.setAsDefaultProtocolClient(scheme, process.execPath, [
       resolve(process.argv[1]),

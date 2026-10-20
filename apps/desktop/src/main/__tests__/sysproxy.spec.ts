@@ -28,6 +28,76 @@ const DARWIN_SERVICES = [
   'Thunderbolt Bridge',
 ].join('\n')
 
+describe('local macOS proxy ownership', () => {
+  const services = 'Network services:\nWi-Fi\nUSB LAN'
+  const own = 'Enabled: Yes\nServer: 127.0.0.1\nPort: 21002'
+  const other = 'Enabled: Yes\nServer: 127.0.0.1\nPort: 7890'
+  const off = 'Enabled: No\nServer: 127.0.0.1\nPort: 21002'
+  const make = (responses: string[]) => {
+    const { exec, calls } = makeExec(responses)
+    return {
+      calls,
+      proxy: createSystemProxyController({
+        host: '127.0.0.1',
+        port: 21002,
+        platform: 'darwin',
+        onlyOwnDarwinProxy: true,
+        exec,
+      }),
+    }
+  }
+  it('reports only this endpoint, including a second active service', async () => {
+    const { proxy } = make([services, other, own])
+    expect(await proxy.isEnabled()).toBe(true)
+    const foreign = make([services, other, off])
+    expect(await foreign.proxy.isEnabled()).toBe(false)
+  })
+  it('disables only owned protocols and preserves another app’s PAC', async () => {
+    // list, Wi-Fi HTTP read/write, HTTPS read, SOCKS read/write, USB reads
+    const { proxy, calls } = make([
+      services,
+      own,
+      '',
+      other,
+      own,
+      '',
+      other,
+      other,
+      off,
+    ])
+    await proxy.disable()
+    expect(calls.filter((c) => c.includes(' -set'))).toEqual([
+      'networksetup -setwebproxystate "Wi-Fi" off',
+      'networksetup -setsocksfirewallproxystate "Wi-Fi" off',
+    ])
+  })
+  it('does not clear a foreign PAC after another app changes it', async () => {
+    const { proxy, calls } = make([
+      'Services:\nWi-Fi',
+      '',
+      '',
+      'Services:\nWi-Fi',
+      'Enabled: Yes\nURL: http://127.0.0.1:7890/foreign.pac',
+    ])
+    await proxy.setAutoProxy('http://127.0.0.1:21000/own.pac')
+    await proxy.disableAutoProxy()
+    expect(calls).not.toContain('networksetup -setautoproxystate "Wi-Fi" off')
+  })
+  it('clears its own PAC', async () => {
+    const { proxy, calls } = make([
+      'Services:\nWi-Fi',
+      '',
+      '',
+      'Services:\nWi-Fi',
+      'Enabled: Yes\nURL: http://127.0.0.1:21000/own.pac',
+      '',
+    ])
+    await proxy.setAutoProxy('http://127.0.0.1:21000/own.pac')
+    await proxy.disableAutoProxy()
+    expect(calls).toContain('networksetup -setautoproxystate "Wi-Fi" off')
+  })
+})
+
 describe('createSystemProxyController', () => {
   beforeEach(() => {
     vi.restoreAllMocks()

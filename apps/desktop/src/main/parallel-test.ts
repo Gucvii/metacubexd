@@ -15,8 +15,36 @@ export function localRuntimeOptions(input: {
     (localBuild ? join(input.appData, 'MetaCubeXD Local') : undefined)
   return {
     localDataDir,
-    parallelTestMode:
-      input.parallel === '1' || (!!localDataDir && input.parallel !== '0'),
+    // Finder launches expose the official controls. Strict test mode is opt-in.
+    parallelTestMode: input.parallel === '1',
+  }
+}
+
+/** Only an explicit action in this app acquires the system proxy. */
+export function manualSystemProxy(
+  controller: SystemProxyController,
+): SystemProxyController {
+  let acquired = false
+  return {
+    ...controller,
+    isEnabled: async () => acquired && controller.isEnabled(),
+    enable: async (bypass) => {
+      // Retain cleanup responsibility even if an OS command partially fails.
+      acquired = true
+      await controller.enable(bypass)
+    },
+    setAutoProxy: async (url) => {
+      acquired = true
+      await controller.setAutoProxy(url)
+    },
+    disable: async () => {
+      if (!acquired) return
+      await controller.disable()
+      acquired = false
+    },
+    disableAutoProxy: async () => {
+      if (acquired) await controller.disableAutoProxy()
+    },
   }
 }
 
